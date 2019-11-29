@@ -6,6 +6,7 @@ const {
 } = require("./errors");
 const { concatArrays, isTextStart, isTextEnd } = require("./doc-utils");
 
+const NONE = -2;
 const EQUAL = 0;
 const START = -1;
 const END = 1;
@@ -31,17 +32,26 @@ function updateInTextTag(part, inTextTag) {
 }
 
 function getTag(tag) {
-	let position = "start";
+	let position = "";
 	let start = 1;
+	let end = tag.indexOf(" ");
 	if (tag[tag.length - 2] === "/") {
 		position = "selfclosing";
-	}
-	if (tag[1] === "/") {
+		if (end === -1) {
+			end = tag.length - 2;
+		}
+	} else if (tag[1] === "/") {
 		start = 2;
 		position = "end";
+		if (end === -1) {
+			end = tag.length - 1;
+		}
+	} else {
+		position = "start";
+		if (end === -1) {
+			end = tag.length - 1;
+		}
 	}
-	const index = tag.indexOf(" ");
-	const end = index === -1 ? tag.length - 1 : index;
 	return {
 		tag: tag.slice(start, end),
 		position,
@@ -149,6 +159,9 @@ function getDelimiterErrors(delimiterMatches, fullText, ranges) {
 }
 
 function compareOffsets(startOffset, endOffset) {
+	if (startOffset === -1 && endOffset === -1) {
+		return NONE;
+	}
 	if (startOffset === endOffset) {
 		return EQUAL;
 	}
@@ -174,21 +187,31 @@ function getAllIndexes(fullText, delimiters) {
 	const indexes = [];
 	let { start, end } = delimiters;
 	let offset = -1;
+	let insideTag = false;
 	while (true) {
 		const startOffset = fullText.indexOf(start, offset + 1);
 		const endOffset = fullText.indexOf(end, offset + 1);
 		let position = null;
 		let len;
-		const compareResult = compareOffsets(startOffset, endOffset);
-		if (compareResult === EQUAL) {
+		let compareResult = compareOffsets(startOffset, endOffset);
+		if (compareResult === NONE) {
 			return indexes;
 		}
+		if (compareResult === EQUAL) {
+			if (!insideTag) {
+				compareResult = START;
+			} else {
+				compareResult = END;
+			}
+		}
 		if (compareResult === END) {
+			insideTag = false;
 			offset = endOffset;
 			position = "end";
 			len = end.length;
 		}
 		if (compareResult === START) {
+			insideTag = true;
 			offset = startOffset;
 			position = "start";
 			len = start.length;
@@ -221,84 +244,80 @@ function getAllIndexes(fullText, delimiters) {
 	}
 }
 
-function Reader(innerContentParts) {
-	this.innerContentParts = innerContentParts;
-	this.full = "";
-	this.parseDelimiters = delimiters => {
-		this.full = this.innerContentParts.map(p => p.value).join("");
-		const delimiterMatches = getAllIndexes(this.full, delimiters);
+function parseDelimiters(innerContentParts, delimiters) {
+	const full = innerContentParts.map(p => p.value).join("");
+	const delimiterMatches = getAllIndexes(full, delimiters);
 
-		let offset = 0;
-		const ranges = this.innerContentParts.map(function(part) {
-			offset += part.value.length;
-			return { offset: offset - part.value.length, lIndex: part.lIndex };
-		});
+	let offset = 0;
+	const ranges = innerContentParts.map(function(part) {
+		offset += part.value.length;
+		return { offset: offset - part.value.length, lIndex: part.lIndex };
+	});
 
-		const errors = getDelimiterErrors(delimiterMatches, this.full, ranges);
-		let cutNext = 0;
-		let delimiterIndex = 0;
+	const errors = getDelimiterErrors(delimiterMatches, full, ranges);
+	let cutNext = 0;
+	let delimiterIndex = 0;
 
-		this.parsed = ranges.map(function(p, i) {
-			const { offset } = p;
-			const range = [offset, offset + this.innerContentParts[i].value.length];
-			const partContent = this.innerContentParts[i].value;
-			const delimitersInOffset = [];
-			while (
-				delimiterIndex < delimiterMatches.length &&
-				inRange(range, delimiterMatches[delimiterIndex])
-			) {
-				delimitersInOffset.push(delimiterMatches[delimiterIndex]);
-				delimiterIndex++;
-			}
-			const parts = [];
-			let cursor = 0;
-			if (cutNext > 0) {
-				cursor = cutNext;
-				cutNext = 0;
-			}
-			let insideDelimiterChange;
-			delimitersInOffset.forEach(function(delimiterInOffset) {
-				const value = partContent.substr(
-					cursor,
-					delimiterInOffset.offset - offset - cursor
-				);
-				if (value.length > 0) {
-					if (insideDelimiterChange) {
-						if (delimiterInOffset.changedelimiter) {
-							cursor =
-								delimiterInOffset.offset - offset + delimiterInOffset.length;
-							insideDelimiterChange = delimiterInOffset.position === "start";
-						}
-						return;
+	const parsed = ranges.map(function(p, i) {
+		const { offset } = p;
+		const range = [offset, offset + innerContentParts[i].value.length];
+		const partContent = innerContentParts[i].value;
+		const delimitersInOffset = [];
+		while (
+			delimiterIndex < delimiterMatches.length &&
+			inRange(range, delimiterMatches[delimiterIndex])
+		) {
+			delimitersInOffset.push(delimiterMatches[delimiterIndex]);
+			delimiterIndex++;
+		}
+		const parts = [];
+		let cursor = 0;
+		if (cutNext > 0) {
+			cursor = cutNext;
+			cutNext = 0;
+		}
+		let insideDelimiterChange;
+		delimitersInOffset.forEach(function(delimiterInOffset) {
+			const value = partContent.substr(
+				cursor,
+				delimiterInOffset.offset - offset - cursor
+			);
+			if (value.length > 0) {
+				if (insideDelimiterChange) {
+					if (delimiterInOffset.changedelimiter) {
+						cursor =
+							delimiterInOffset.offset - offset + delimiterInOffset.length;
+						insideDelimiterChange = delimiterInOffset.position === "start";
 					}
-					parts.push({ type: "content", value, offset: cursor + offset });
-					cursor += value.length;
-				}
-				const delimiterPart = {
-					type: "delimiter",
-					position: delimiterInOffset.position,
-					offset: cursor + offset,
-				};
-				if (delimiterInOffset.error) {
-					delimiterPart.error = delimiterInOffset.error;
-				}
-				if (delimiterInOffset.changedelimiter) {
-					insideDelimiterChange = delimiterInOffset.position === "start";
-					cursor = delimiterInOffset.offset - offset + delimiterInOffset.length;
 					return;
 				}
-				parts.push(delimiterPart);
-				cursor = delimiterInOffset.offset - offset + delimiterInOffset.length;
-			});
-			cutNext = cursor - partContent.length;
-			const value = partContent.substr(cursor);
-			if (value.length > 0) {
-				parts.push({ type: "content", value, offset });
+				parts.push({ type: "content", value, offset: cursor + offset });
+				cursor += value.length;
 			}
-			return parts;
-		}, this);
-		this.errors = errors;
-	};
+			const delimiterPart = {
+				type: "delimiter",
+				position: delimiterInOffset.position,
+				offset: cursor + offset,
+			};
+			if (delimiterInOffset.error) {
+				delimiterPart.error = delimiterInOffset.error;
+			}
+			if (delimiterInOffset.changedelimiter) {
+				insideDelimiterChange = delimiterInOffset.position === "start";
+				cursor = delimiterInOffset.offset - offset + delimiterInOffset.length;
+				return;
+			}
+			parts.push(delimiterPart);
+			cursor = delimiterInOffset.offset - offset + delimiterInOffset.length;
+		});
+		cutNext = cursor - partContent.length;
+		const value = partContent.substr(cursor);
+		if (value.length > 0) {
+			parts.push({ type: "content", value, offset });
+		}
+		return parts;
+	}, this);
+	return { parsed, errors };
 }
 
 function getContentParts(xmlparsed) {
@@ -314,10 +333,13 @@ function getContentParts(xmlparsed) {
 }
 
 module.exports = {
+	parseDelimiters,
 	parse(xmlparsed, delimiters) {
 		let inTextTag = false;
-		const reader = new Reader(getContentParts(xmlparsed));
-		reader.parseDelimiters(delimiters);
+		const { parsed: delimiterParsed, errors } = parseDelimiters(
+			getContentParts(xmlparsed),
+			delimiters
+		);
 
 		let lexed = [];
 		let index = 0;
@@ -329,7 +351,7 @@ module.exports = {
 			if (inTextTag && part.type === "content") {
 				Array.prototype.push.apply(
 					lexed,
-					reader.parsed[index].map(function(p) {
+					delimiterParsed[index].map(function(p) {
 						if (p.type === "content") {
 							p.position = "insidetag";
 						}
@@ -345,7 +367,7 @@ module.exports = {
 			p.lIndex = i;
 			return p;
 		});
-		return { errors: reader.errors, lexed };
+		return { errors, lexed };
 	},
 	xmlparse(content, xmltags) {
 		const matches = tagMatcher(content, xmltags.text, xmltags.other);

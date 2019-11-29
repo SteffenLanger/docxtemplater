@@ -29,7 +29,7 @@ const http = require("http");
 const browserCapability = {
 	CHROME: {
 		browserName: "chrome",
-		chromeOptions: {
+		"goog:chromeOptions": {
 			args: [
 				"headless",
 				// Use --disable-gpu to avoid an error from a missing Mesa
@@ -64,7 +64,9 @@ fullBrowserName = BROWSER + " (local)";
 if (!desiredCapabilities) {
 	exit("Unknown browser :" + BROWSER);
 }
-let options = {};
+let options = {
+	logLevel: "warn",
+};
 
 if (BROWSER === "SAUCELABS") {
 	fullBrowserName = `${browserName} ${version} ${platform} (SAUCELABS)`;
@@ -72,31 +74,26 @@ if (BROWSER === "SAUCELABS") {
 		tunnelIdentifier: TRAVIS_JOB_NUMBER,
 		"tunnel-identifier": TRAVIS_JOB_NUMBER,
 		build: TRAVIS_BUILD_NUMBER,
-		host: "ondemand.saucelabs.com",
-		port: 80,
 		user: SAUCE_USERNAME,
 		key: SAUCE_ACCESS_KEY,
-		logLevel: "silent",
+		logLevel: "warn",
 	};
 }
 
-options.desiredCapabilities = desiredCapabilities;
+options.capabilities = desiredCapabilities;
 
 console.log("Running test on " + fullBrowserName);
 
-const client = webdriverio.remote(options);
 const serve = serveStatic(__dirname);
 const server = http.createServer(function onRequest(req, res) {
 	serve(req, res, finalhandler(req, res));
 });
 
-function updateSaucelabsStatus(result, done) {
+function updateSaucelabsStatus(client, result, done) {
 	request(
 		{
 			headers: { "Content-Type": "text/json" },
-			url: `http://${SAUCE_USERNAME}:${SAUCE_ACCESS_KEY}@saucelabs.com/rest/v1/${SAUCE_USERNAME}/jobs/${
-				client.requestHandler.sessionID
-			}`,
+			url: `http://${SAUCE_USERNAME}:${SAUCE_ACCESS_KEY}@saucelabs.com/rest/v1/${SAUCE_USERNAME}/jobs/${client.sessionId}`,
 			method: "PUT",
 			body: JSON.stringify({
 				passed: result,
@@ -114,74 +111,112 @@ function updateSaucelabsStatus(result, done) {
 	);
 }
 
+const second = 1000;
+const timeoutConnection = 180;
+const failuresRegex = /.*failures: ([0-9]+).*/;
+const passesRegex = /.*passes: ([0-9]+).*/;
 const startTime = +new Date();
-server.listen(port, function() {
-	function test() {
-		if (+new Date() - startTime > 10000) {
-			exit("Aborting connection to webdriver after 10 seconds");
-		}
-		const postfix = process.env.filter
-			? `?grep=${process.env.filter}&invert=true`
-			: "";
-		const url = `http://localhost:${port}/test/mocha.html${postfix}`;
-		return client
-			.init()
-			.url(url)
-			.then(function() {
-				return client.waitForText("#status", 30000);
-			})
-			.getText("#mocha-stats")
-			.then(function(text) {
-				const passes = parseInt(text.replace(/.*passes: ([0-9]+).*/, "$1"), 10);
-				const failures = parseInt(
-					text.replace(/.*failures: ([0-9]+).*/, "$1"),
-					10
+server.listen(port, async function() {
+	const client = await webdriverio.remote(options);
+	async function waitForText(selector, timeout) {
+		return await client.waitUntil(
+			async function getText() {
+				const el = await client.$(selector);
+				if (!(await el.isExisting())) {
+					return false;
+				}
+				const text = await el.getText();
+				if (text.length > 0) {
+					return true;
+				}
+			},
+			timeout,
+			`Expected to find text in ${selector} but did not find it`
+		);
+	}
+	async function waitForExist(selector, timeout) {
+		return await client.waitUntil(
+			async function exists() {
+				const el = await client.$(selector);
+				if (await el.isExisting()) {
+					return true;
+				}
+			},
+			timeout,
+			`Expected to find ${selector} but did not find it`
+		);
+	}
+	async function test() {
+		try {
+			if (+new Date() - startTime > timeoutConnection * second) {
+				exit(
+					`Aborting connection to webdriver after ${timeoutConnection} seconds`
 				);
-				return client
-					.waitForExist("li.failures a", 5000)
-					.then(function() {
-						return client.element("li.failures a").click();
-					})
-					.then(function() {
-						return client.pause(2000);
-					})
-					.then(function() {
-						expect(passes).to.be.above(0);
-						expect(failures).to.be.equal(0);
-						return { failures, passes };
-					});
-			})
-			.then(function({ passes }) {
-				console.log(
-					`browser tests successful (${passes} passes) on ${fullBrowserName}`
-				);
-				if (BROWSER === "SAUCELABS") {
-					updateSaucelabsStatus(true, e => {
-						if (e) {
-							throw e;
+			}
+			const postfix = process.env.filter
+				? `?grep=${process.env.filter}&invert=true`
+				: "";
+			const url = `http://localhost:${port}/test/mocha.html${postfix}`;
+			await client.url(url);
+
+			await waitForText("#status", 30000);
+			await client.pause(5000);
+			await waitForExist("li.failures a", 5000);
+			const text = await (await client.$("#mocha-stats")).getText();
+			const passes = parseInt(text.replace(passesRegex, "$1"), 10);
+			const failures = parseInt(text.replace(failuresRegex, "$1"), 10);
+			if (failures > 0) {
+				const failedSuites = await client.$$("li.test.fail");
+				for (let i = 0, len = failedSuites.length; i < len; i++) {
+					const titleElement = await await failedSuites[i].$("h2");
+					const title = await client.execute(parent => {
+						let child = parent.firstChild;
+						let ret = "";
+						while (child) {
+							if (child.nodeType === Node.TEXT_NODE) {
+								ret += child.textContent;
+							}
+							child = child.nextSibling;
 						}
-						server.close();
-					});
-				} else {
+						return ret;
+					}, titleElement);
+					const error = await (await failedSuites[i].$("pre.error")).getText();
+					console.log(title);
+					console.log(title.replace(/./g, "="));
+					console.log(error);
+					console.log();
+				}
+				throw new Error("Failures happened");
+			}
+			expect(passes).to.be.above(0);
+			console.log(
+				`browser tests successful (${passes} passes) on ${fullBrowserName}`
+			);
+			if (BROWSER === "SAUCELABS") {
+				updateSaucelabsStatus(client, true, e => {
+					if (e) {
+						throw e;
+					}
 					server.close();
-				}
-			})
-			.end()
-			.catch(function(e) {
-				if (e.message.indexOf("ECONNREFUSED") !== -1) {
-					return test();
-				}
-				if (BROWSER === "SAUCELABS") {
-					updateSaucelabsStatus(false, err => {
-						if (err) {
-							throw err;
-						}
-						exit(e);
-					});
-				} else {
+				});
+			} else {
+				server.close();
+			}
+		} catch (e) {
+			if (e.message.indexOf("ECONNREFUSED") !== -1) {
+				return test();
+			}
+			if (BROWSER === "SAUCELABS") {
+				updateSaucelabsStatus(client, false, err => {
+					if (err) {
+						throw err;
+					}
 					exit(e);
-				}
-			});
+				});
+			} else {
+				exit(e);
+			}
+		}
 	}
 	test();
 });

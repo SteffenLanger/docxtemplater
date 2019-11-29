@@ -5,7 +5,8 @@ function postrender(parts, options) {
 		const module = options.modules[i];
 		parts = module.postrender(parts, options);
 	}
-	return parts.join("");
+	const contains = options.fileTypeConfig.tagShouldContain || [];
+	return options.joinUncorrupt(parts, contains);
 }
 
 module.exports = postrender;

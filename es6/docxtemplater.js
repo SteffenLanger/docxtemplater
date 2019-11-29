@@ -3,6 +3,11 @@
 const DocUtils = require("./doc-utils");
 DocUtils.traits = require("./traits");
 DocUtils.moduleWrapper = require("./module-wrapper");
+
+const commonModule = require("./modules/common");
+const ctXML = "[Content_Types].xml";
+
+const Lexer = require("./lexer");
 const {
 	defaults,
 	str2xml,
@@ -19,7 +24,7 @@ const {
 	throwApiVersionError,
 } = require("./errors");
 
-const currentModuleApiVersion = [3, 6, 0];
+const currentModuleApiVersion = [3, 16, 0];
 
 const Docxtemplater = class Docxtemplater {
 	constructor() {
@@ -29,7 +34,7 @@ const Docxtemplater = class Docxtemplater {
 			);
 		}
 		this.compiled = {};
-		this.modules = [];
+		this.modules = [commonModule()];
 		this.setOptions({});
 	}
 	getModuleApiVersion() {
@@ -46,22 +51,28 @@ const Docxtemplater = class Docxtemplater {
 			});
 		}
 		if (neededVersion[0] !== currentModuleApiVersion[0]) {
-			throwApiVersionError("The major api version do not match", {
-				neededVersion,
-				currentModuleApiVersion,
-				explanation: `moduleAPIVersionMismatch : needed=${neededVersion.join(
-					"."
-				)}, current=${currentModuleApiVersion.join(".")}`,
-			});
+			throwApiVersionError(
+				"The major api version do not match, you probably have to update docxtemplater with npm install --save docxtemplater",
+				{
+					neededVersion,
+					currentModuleApiVersion,
+					explanation: `moduleAPIVersionMismatch : needed=${neededVersion.join(
+						"."
+					)}, current=${currentModuleApiVersion.join(".")}`,
+				}
+			);
 		}
 		if (neededVersion[1] > currentModuleApiVersion[1]) {
-			throwApiVersionError("The minor api version is not uptodate", {
-				neededVersion,
-				currentModuleApiVersion,
-				explanation: `moduleAPIVersionMismatch : needed=${neededVersion.join(
-					"."
-				)}, current=${currentModuleApiVersion.join(".")}`,
-			});
+			throwApiVersionError(
+				"The minor api version is not uptodate, you probably have to update docxtemplater with npm install --save docxtemplater",
+				{
+					neededVersion,
+					currentModuleApiVersion,
+					explanation: `moduleAPIVersionMismatch : needed=${neededVersion.join(
+						"."
+					)}, current=${currentModuleApiVersion.join(".")}`,
+				}
+			);
 		}
 		return true;
 	}
@@ -76,11 +87,20 @@ const Docxtemplater = class Docxtemplater {
 		});
 	}
 	attachModule(module, options = {}) {
+		if (module.requiredAPIVersion) {
+			this.verifyApiVersion(module.requiredAPIVersion);
+		}
+		if (module.attached === true) {
+			throw new Error("Cannot attach a module that was already attached");
+		}
+		module.attached = true;
 		const { prefix } = options;
 		if (prefix) {
 			module.prefix = prefix;
 		}
-		this.modules.push(moduleWrapper(module));
+		const wrappedModule = moduleWrapper(module);
+		this.modules.push(wrappedModule);
+		wrappedModule.on("attached");
 		return this;
 	}
 	setOptions(options) {
@@ -103,7 +123,7 @@ const Docxtemplater = class Docxtemplater {
 	loadZip(zip) {
 		if (zip.loadAsync) {
 			throw new XTInternalError(
-				"Docxtemplater doesn't handle JSZip version >=3, see changelog"
+				"Docxtemplater doesn't handle JSZip version >=3, please use pizzip"
 			);
 		}
 		this.zip = zip;
@@ -118,8 +138,11 @@ const Docxtemplater = class Docxtemplater {
 		return this;
 	}
 	compileFile(fileName) {
+		this.compiled[fileName].parse();
+	}
+	precompileFile(fileName) {
 		const currentFile = this.createTemplateClass(fileName);
-		currentFile.parse();
+		currentFile.preparse();
 		this.compiled[fileName] = currentFile;
 	}
 	resolveData(data) {
@@ -158,6 +181,11 @@ const Docxtemplater = class Docxtemplater {
 		// Sometimes they don't exist (footer.xml for example)
 		this.templatedFiles.forEach(fileName => {
 			if (this.zip.files[fileName] != null) {
+				this.precompileFile(fileName);
+			}
+		});
+		this.templatedFiles.forEach(fileName => {
+			if (this.zip.files[fileName] != null) {
 				this.compileFile(fileName);
 			}
 		});
@@ -168,16 +196,26 @@ const Docxtemplater = class Docxtemplater {
 		if (this.zip.files.mimetype) {
 			fileType = "odt";
 		}
-		if (
-			this.zip.files["word/document.xml"] ||
-			this.zip.files["word/document2.xml"]
-		) {
-			fileType = "docx";
-		}
-		if (this.zip.files["ppt/presentation.xml"]) {
-			fileType = "pptx";
-		}
-
+		const contentTypes = this.zip.files[ctXML];
+		this.targets = [];
+		const contentTypeXml = contentTypes ? str2xml(contentTypes.asText()) : null;
+		const overrides = contentTypeXml
+			? contentTypeXml.getElementsByTagName("Override")
+			: null;
+		const defaults = contentTypeXml
+			? contentTypeXml.getElementsByTagName("Default")
+			: null;
+		this.modules.forEach(module => {
+			fileType =
+				module.getFileType({
+					zip: this.zip,
+					contentTypes,
+					contentTypeXml,
+					overrides,
+					defaults,
+					doc: this,
+				}) || fileType;
+		});
 		if (fileType === "odt") {
 			throwFileTypeNotHandled(fileType);
 		}
@@ -187,6 +225,7 @@ const Docxtemplater = class Docxtemplater {
 		this.fileType = fileType;
 		this.fileTypeConfig =
 			this.options.fileTypeConfig ||
+			this.fileTypeConfig ||
 			Docxtemplater.FileTypeConfig[this.fileType];
 		return this;
 	}
@@ -194,6 +233,7 @@ const Docxtemplater = class Docxtemplater {
 		this.compile();
 		this.setModules({
 			data: this.data,
+			Lexer,
 		});
 		this.mapper = this.modules.reduce(function(value, module) {
 			return module.getRenderedMap(value);
@@ -248,11 +288,14 @@ const Docxtemplater = class Docxtemplater {
 	}
 	getFullText(path) {
 		return this.createTemplateClass(
-			path || this.fileTypeConfig.textPath(this.zip)
+			path || this.fileTypeConfig.textPath(this)
 		).getFullText();
 	}
 	getTemplatedFiles() {
 		this.templatedFiles = this.fileTypeConfig.getTemplatedFiles(this.zip);
+		this.targets.forEach(target => {
+			this.templatedFiles.push(target);
+		});
 		return this.templatedFiles;
 	}
 };

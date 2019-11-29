@@ -1,16 +1,26 @@
-const { merge } = require("lodash");
+const { merge, cloneDeep } = require("lodash");
+
+function isPlaceholder(part) {
+	return part.type === "placeholder";
+}
+
 function getTags(postParsed) {
-	return postParsed
-		.filter(function(part) {
-			return part.type === "placeholder";
-		})
-		.reduce(function(tags, part) {
-			tags[part.value] = tags[part.value] || {};
-			if (part.subparsed) {
-				tags[part.value] = merge(tags[part.value], getTags(part.subparsed));
-			}
-			return tags;
-		}, {});
+	return postParsed.filter(isPlaceholder).reduce(function(tags, part) {
+		tags[part.value] = tags[part.value] || {};
+		if (part.subparsed) {
+			tags[part.value] = merge(tags[part.value], getTags(part.subparsed));
+		}
+		return tags;
+	}, {});
+}
+
+function getStructuredTags(postParsed) {
+	return postParsed.filter(isPlaceholder).map(function(part) {
+		if (part.subparsed) {
+			part.subparsed = getStructuredTags(part.subparsed);
+		}
+		return part;
+	}, {});
 }
 
 class InspectModule {
@@ -23,19 +33,42 @@ class InspectModule {
 	optionsTransformer(options, docxtemplater) {
 		this.fileTypeConfig = docxtemplater.fileTypeConfig;
 		this.zip = docxtemplater.zip;
-		this.inspect.templatedFiles = docxtemplater.getTemplatedFiles();
-		this.inspect.fileType = docxtemplater.fileType;
+		this.targets = docxtemplater.targets;
+		this.templatedFiles = docxtemplater.getTemplatedFiles();
+		this.fileType = docxtemplater.fileType;
 		return options;
 	}
+	on(eventName) {
+		if (eventName === "attached") {
+			this.attached = false;
+			this.inspect = {};
+			this.fullInspected = {};
+			this.filePath = null;
+			this.nullValues = [];
+		}
+	}
+	// eslint-disable-next-line complexity
 	set(obj) {
 		if (obj.data) {
-			this.inspect = merge({}, this.inspect, { tags: obj.data });
+			this.inspect.tags = obj.data;
 		}
 		if (obj.inspect) {
 			if (obj.inspect.filePath) {
 				this.filePath = obj.inspect.filePath;
+				this.inspect = this.fullInspected[this.filePath] || {};
+			} else if (obj.inspect.content) {
+				this.inspect.content = obj.inspect.content;
+			} else if (obj.inspect.postparsed) {
+				this.inspect.postparsed = cloneDeep(obj.inspect.postparsed);
+			} else if (obj.inspect.parsed) {
+				this.inspect.parsed = cloneDeep(obj.inspect.parsed);
+			} else if (obj.inspect.lexed) {
+				this.inspect.lexed = cloneDeep(obj.inspect.lexed);
+			} else if (obj.inspect.xmllexed) {
+				this.inspect.xmllexed = cloneDeep(obj.inspect.xmllexed);
+			} else if (obj.inspect.resolved) {
+				this.inspect.resolved = obj.inspect.resolved;
 			}
-			this.inspect = merge({}, this.inspect, obj.inspect);
 			this.fullInspected[this.filePath] = this.inspect;
 		}
 	}
@@ -48,13 +81,28 @@ class InspectModule {
 		);
 	}
 	getTags(file) {
-		file = file || this.fileTypeConfig.textPath(this.zip);
-		return getTags(this.fullInspected[file].postparsed);
+		file = file || this.fileTypeConfig.textPath(this);
+		return getTags(cloneDeep(this.fullInspected[file].postparsed));
 	}
 	getAllTags() {
 		return Object.keys(this.fullInspected).reduce((result, file) => {
 			return merge(result, this.getTags(file));
 		}, {});
+	}
+	getStructuredTags(file) {
+		file = file || this.fileTypeConfig.textPath(this);
+		return getStructuredTags(cloneDeep(this.fullInspected[file].postparsed));
+	}
+	getAllStructuredTags() {
+		return Object.keys(this.fullInspected).reduce((result, file) => {
+			return result.concat(this.getStructuredTags(file));
+		}, []);
+	}
+	getFileType() {
+		return this.fileType;
+	}
+	getTemplatedFiles() {
+		return this.templatedFiles;
 	}
 }
 

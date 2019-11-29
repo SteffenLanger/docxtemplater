@@ -4,72 +4,156 @@ const {
 	shouldBeSame,
 	expect,
 	resolveSoon,
+	createXmlTemplaterDocxNoRender,
+	cleanRecursive,
 } = require("./utils");
 
-const raw = `<p:sp>
-  <p:nvSpPr>
-    <p:cNvPr id="37" name="CustomShape 2"/>
-    <p:cNvSpPr/>
-    <p:nvPr/>
-  </p:nvSpPr>
-  <p:spPr>
-    <a:xfrm>
-      <a:off x="504000" y="1769040"/>
-      <a:ext cx="9071280" cy="4384080"/>
-    </a:xfrm>
-    <a:prstGeom prst="rect">
-      <a:avLst/>
-    </a:prstGeom>
-    <a:noFill/>
-    <a:ln>
-      <a:noFill/>
-    </a:ln>
-  </p:spPr>
-  <p:style>
-    <a:lnRef idx="0"/>
-    <a:fillRef idx="0"/>
-    <a:effectRef idx="0"/>
-    <a:fontRef idx="minor"/>
-  </p:style>
-  <p:txBody>
-    <a:bodyPr lIns="0" rIns="0" tIns="0" bIns="0" anchor="ctr"/>
-    <a:p>
-      <a:pPr algn="ctr">
-        <a:lnSpc>
-          <a:spcPct val="100000"/>
-        </a:lnSpc>
-      </a:pPr>
-      <a:r>
-        <a:rPr b="0" lang="fr-FR" sz="3200" spc="-1" strike="noStrike">
-          <a:solidFill>
-            <a:srgbClr val="000000"/>
-          </a:solidFill>
-          <a:uFill>
-            <a:solidFill>
-              <a:srgbClr val="ffffff"/>
-            </a:solidFill>
-          </a:uFill>
-          <a:latin typeface="Arial"/>
-        </a:rPr>
-        <a:t>Hello World</a:t>
-      </a:r>
-      <a:endParaRPr b="0" lang="fr-FR" sz="1800" spc="-1" strike="noStrike">
-        <a:solidFill>
-          <a:srgbClr val="000000"/>
-        </a:solidFill>
-        <a:uFill>
-          <a:solidFill>
-            <a:srgbClr val="ffffff"/>
-          </a:solidFill>
-        </a:uFill>
-        <a:latin typeface="Arial"/>
-      </a:endParaRPr>
-    </a:p>
-  </p:txBody>
-</p:sp>`;
+const printy = require("./printy");
+const { cloneDeep } = require("lodash");
+const { expectedPrintedPostParsed, rawXMLValue } = require("./data-fixtures");
 
 const angularParser = require("./angular-parser");
 const Errors = require("../errors.js");
+
+describe("Simple templating", function() {
+	describe("text templating", function() {
+		it("should change values with template data", function() {
+			const tags = {
+				first_name: "Hipp",
+				last_name: "Edgar",
+				phone: "0652455478",
+				description: "New Website",
+			};
+			const doc = createDoc("tag-example.docx");
+			doc.setData(tags);
+			doc.render();
+			expect(doc.getFullText()).to.be.equal("Edgar Hipp");
+			expect(doc.getFullText("word/header1.xml")).to.be.equal(
+				"Edgar Hipp0652455478New Website"
+			);
+			expect(doc.getFullText("word/footer1.xml")).to.be.equal(
+				"EdgarHipp0652455478"
+			);
+			shouldBeSame({ doc, expectedName: "expected-tag-example.docx" });
+		});
+	});
+
+	it("should replace custom properties text", function() {
+		const doc = createDoc("properties.docx");
+		let app = doc.getZip().files["docProps/app.xml"].asText();
+		let core = doc.getZip().files["docProps/core.xml"].asText();
+		expect(app).to.contain("{tag1}");
+		expect(core).to.contain("{tag1}");
+		expect(core).to.contain("{tag2}");
+		expect(core).to.contain("{tag3}");
+		expect(app).to.contain("{tag4}");
+		expect(app).to.contain("{tag5}");
+		expect(core).to.contain("{tag6}");
+		expect(core).to.contain("{tag7}");
+		expect(core).to.contain("{tag8}");
+		expect(app).to.contain("{tag9}");
+		doc
+			.setData({
+				tag1: "resolvedvalue1",
+				tag2: "resolvedvalue2",
+				tag3: "resolvedvalue3",
+				tag4: "resolvedvalue4",
+				tag5: "resolvedvalue5",
+				tag6: "resolvedvalue6",
+				tag7: "resolvedvalue7",
+				tag8: "resolvedvalue8",
+				tag9: "resolvedvalue9",
+			})
+			.render();
+		app = doc.getZip().files["docProps/app.xml"].asText();
+		core = doc.getZip().files["docProps/core.xml"].asText();
+		expect(app).to.contain("resolvedvalue1");
+		expect(core).to.contain("resolvedvalue1");
+		expect(core).to.contain("resolvedvalue2");
+		expect(core).to.contain("resolvedvalue3");
+		expect(app).to.contain("resolvedvalue4");
+		expect(app).to.contain("resolvedvalue5");
+		expect(core).to.contain("resolvedvalue6");
+		expect(core).to.contain("resolvedvalue7");
+		expect(core).to.contain("resolvedvalue8");
+		expect(app).to.contain("resolvedvalue9");
+	});
+});
+
+describe("Spacing/Linebreaks", function() {
+	it("should show spaces with linebreak option", function() {
+		const doc = createDoc("tag-multiline.docx");
+		doc.setData({
+			description: `hello there
+    deep indentation
+       goes here
+    end`,
+		});
+		doc.setOptions({ linebreaks: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-multiline-indent.docx" });
+	});
+	it("should be possible to have linebreaks if setting the option", function() {
+		const doc = createDoc("tag-multiline.docx");
+		doc.setData({
+			description: "The description,\nmultiline",
+		});
+		doc.setOptions({ linebreaks: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-multiline.docx" });
+	});
+
+	it("should work with linebreaks without changing the style", function() {
+		const doc = createDoc("multi-tags.docx");
+		doc.setData({
+			test: "The tag1,\nmultiline\nfoobaz",
+			test2: "The tag2,\nmultiline\nfoobar",
+		});
+		doc.setOptions({ linebreaks: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-two-multiline.docx" });
+	});
+	it("should be possible to have linebreaks if setting the option", function() {
+		const doc = createDoc("tag-multiline.pptx");
+		doc.setData({
+			description: "The description,\nmultiline",
+		});
+		doc.setOptions({ linebreaks: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-multiline.pptx" });
+	});
+
+	it("should not fail when using linebreaks and tagvalue not a string", function() {
+		const doc = createDoc("tag-multiline.pptx");
+		doc.setData({
+			description: true,
+		});
+		doc.setOptions({ linebreaks: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-regression-multiline.pptx" });
+	});
+});
+
+describe("Docm/Pptm generation", function() {
+	it("should work with docm", function() {
+		const tags = {
+			user: "John",
+		};
+		const doc = createDoc("docm.docx");
+		doc.setData(tags);
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-docm.docx" });
+	});
+	it("should work with pptm", function() {
+		const tags = {
+			user: "John",
+		};
+		const doc = createDoc("pptm.pptx");
+		doc.setData(tags);
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-pptm.pptx" });
+	});
+});
 
 describe("Pptx generation", function() {
 	it("should work with title", function() {
@@ -89,10 +173,13 @@ describe("Pptx generation", function() {
 		const doc = createDoc("table-example.pptx");
 		doc
 			.setData({
-				users: [{ msg: "hello", name: "mary" }, { msg: "hello", name: "john" }],
+				users: [
+					{ msg: "hello", name: "mary" },
+					{ msg: "hello", name: "john" },
+				],
 			})
 			.render();
-		shouldBeSame({ doc, expectedName: "table-example-expected.pptx" });
+		shouldBeSame({ doc, expectedName: "expected-table-example.pptx" });
 	});
 	it("should work with loop pptx", function() {
 		const doc = createDoc("loop-example.pptx");
@@ -118,7 +205,7 @@ describe("Pptx generation", function() {
 				};
 			},
 		});
-		doc.setData({ raw }).render();
+		doc.setData({ raw: rawXMLValue }).render();
 		expect(calls).to.equal(1);
 		expect(scope.raw).to.be.a("string");
 		expect(meta).to.be.an("object");
@@ -146,7 +233,7 @@ describe("Pptx generation", function() {
 			},
 		});
 		doc.compile();
-		return doc.resolveData({ raw }).then(function() {
+		return doc.resolveData({ raw: rawXMLValue }).then(function() {
 			doc.render();
 			expect(calls).to.equal(1);
 			expect(scope.raw).to.be.a("string");
@@ -156,16 +243,6 @@ describe("Pptx generation", function() {
 			expect(doc.getFullText()).to.be.equal("Hello World");
 			shouldBeSame({ doc, expectedName: "expected-raw-xml-example.pptx" });
 		});
-	});
-
-	it("should be possible to have linebreaks if setting the option", function() {
-		const doc = createDoc("tag-multiline.pptx");
-		doc.setData({
-			description: "The description,\nmultiline",
-		});
-		doc.setOptions({ linebreaks: true });
-		doc.render();
-		shouldBeSame({ doc, expectedName: "expected-multiline.pptx" });
 	});
 });
 
@@ -191,7 +268,7 @@ describe("Table", function() {
 		doc.setData(tags);
 		doc.setOptions({ paragraphLoop: true });
 		doc.render();
-		shouldBeSame({ doc, expectedName: "loop-valid-expected.docx" });
+		shouldBeSame({ doc, expectedName: "expected-loop-valid.docx" });
 	});
 
 	it("should work with tables", function() {
@@ -212,7 +289,7 @@ describe("Table", function() {
 		expect(text).to.be.equal(expectedText);
 		shouldBeSame({
 			doc,
-			expectedName: "tag-intelligent-loop-table-expected.docx",
+			expectedName: "expected-tag-intelligent-loop-table.docx",
 		});
 	});
 
@@ -297,10 +374,31 @@ describe("Table", function() {
 		doc.render();
 		shouldBeSame({ doc, expectedName: "expected-raw-xml.docx" });
 	});
+
+	it("should not corrupt table with empty rawxml within loop", function() {
+		const doc = createDoc("loops-with-table-raw-xml.docx");
+		doc.setData({
+			loop: [
+				{ loop2: [] },
+				{ loop2: {}, raw: "<w:p><w:r><w:t>RAW</w:t></w:r></w:p>" },
+			],
+		});
+		doc.setOptions({ paragraphLoop: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-loop-raw-xml.docx" });
+	});
+
+	it("should not corrupt table with empty loop", function() {
+		const doc = createDoc("table-loop.docx");
+		doc.setData({});
+		doc.setOptions({ paragraphLoop: true });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-empty-table.docx" });
+	});
 });
 
-describe("Dash Loop Testing", function() {
-	it("dash loop ok on simple table -> w:tr", function() {
+describe("Dash Loop", function() {
+	it("should work on simple table -> w:tr", function() {
 		const tags = {
 			os: [
 				{ type: "linux", price: "0", reference: "Ubuntu10" },
@@ -315,7 +413,7 @@ describe("Dash Loop Testing", function() {
 		const text = doc.getFullText();
 		expect(text).to.be.equal(expectedText);
 	});
-	it("dash loop ok on simple table -> w:table", function() {
+	it("should work on simple table -> w:table", function() {
 		const tags = {
 			os: [
 				{ type: "linux", price: "0", reference: "Ubuntu10" },
@@ -330,7 +428,7 @@ describe("Dash Loop Testing", function() {
 		const text = doc.getFullText();
 		expect(text).to.be.equal(expectedText);
 	});
-	it("dash loop ok on simple list -> w:p", function() {
+	it("should work on simple list -> w:p", function() {
 		const tags = {
 			os: [
 				{ type: "linux", price: "0", reference: "Ubuntu10" },
@@ -347,60 +445,17 @@ describe("Dash Loop Testing", function() {
 	});
 });
 
-describe("Templating", function() {
-	describe("text templating", function() {
-		it("should change values with template data", function() {
-			const tags = {
-				first_name: "Hipp",
-				last_name: "Edgar",
-				phone: "0652455478",
-				description: "New Website",
-			};
-			const doc = createDoc("tag-example.docx");
-			doc.setData(tags);
-			doc.render();
-			expect(doc.getFullText()).to.be.equal("Edgar Hipp");
-			expect(doc.getFullText("word/header1.xml")).to.be.equal(
-				"Edgar Hipp0652455478New Website"
-			);
-			expect(doc.getFullText("word/footer1.xml")).to.be.equal(
-				"EdgarHipp0652455478"
-			);
-			shouldBeSame({ doc, expectedName: "tag-example-expected.docx" });
-		});
-	});
-
-	it("should be possible to have linebreaks if setting the option", function() {
-		const doc = createDoc("tag-multiline.docx");
-		doc.setData({
-			description: "The description,\nmultiline",
-		});
-		doc.setOptions({ linebreaks: true });
-		doc.render();
-		shouldBeSame({ doc, expectedName: "expected-multiline.docx" });
-	});
-
-	it("should work with linebreaks without changing the style", function() {
-		const doc = createDoc("multi-tags.docx");
-		doc.setData({
-			test: "The tag1,\nmultiline\nfoobaz",
-			test2: "The tag2,\nmultiline\nfoobar",
-		});
-		doc.setOptions({ linebreaks: true });
-		doc.render();
-		shouldBeSame({ doc, expectedName: "expected-two-multiline.docx" });
-	});
-
-	it("should work with paragraphloop", function() {
+describe("ParagraphLoop", function() {
+	it("should work with docx", function() {
 		const doc = createDoc("users.docx");
 		doc.setOptions({
 			paragraphLoop: true,
 		});
 		doc.setData({ users: ["John", "Jane", "Louis"] }).render();
-		shouldBeSame({ doc, expectedName: "users-expected.docx" });
+		shouldBeSame({ doc, expectedName: "expected-users.docx" });
 	});
 
-	it("should work with paragraphloop without removing extra text", function() {
+	it("should work without removing extra text", function() {
 		const doc = createDoc("paragraph-loops.docx");
 		doc.setOptions({
 			paragraphLoop: true,
@@ -408,13 +463,21 @@ describe("Templating", function() {
 		doc
 			.setData({
 				condition: [1, 2],
+				l1: [
+					{
+						l2: ["a", "b", "c"],
+					},
+					{
+						l2: ["d", "e", "f"],
+					},
+				],
 				placeholder: "placeholder-value",
 			})
 			.render();
 		shouldBeSame({ doc, expectedName: "expected-paragraph-loop.docx" });
 	});
 
-	it("should work with paragraphloop pptx", function() {
+	it("should work with pptx", function() {
 		const doc = createDoc("paragraph-loop.pptx");
 		doc.setOptions({
 			paragraphLoop: true,
@@ -429,6 +492,46 @@ describe("Templating", function() {
 			})
 			.render();
 		shouldBeSame({ doc, expectedName: "expected-paragraph-loop.pptx" });
+	});
+
+	it("should not fail when having paragraph in paragraph", function() {
+		const doc = createDoc("regression-par-in-par.docx");
+		const printedPostparsed = [];
+		let filePath = "";
+		doc.attachModule({
+			set(obj) {
+				if (obj.inspect) {
+					if (obj.inspect.filePath) {
+						filePath = obj.inspect.filePath;
+					}
+					if (obj.inspect.postparsed) {
+						printedPostparsed[filePath] = printy(obj.inspect.postparsed);
+					}
+				}
+			},
+		});
+
+		doc.setOptions({
+			paragraphLoop: true,
+			parser: () => ({
+				get: () => "foo",
+			}),
+		});
+		doc.setData({});
+		doc.render();
+		expect(printedPostparsed["word/document.xml"]).to.be.equal(
+			expectedPrintedPostParsed
+		);
+		shouldBeSame({ doc, expectedName: "expected-rendered-par-in-par.docx" });
+	});
+
+	it("should work with spacing at the end", function() {
+		const doc = createDoc("spacing-end.docx");
+		doc.setOptions({
+			paragraphLoop: true,
+		});
+		doc.setData({ name: "John" }).render();
+		shouldBeSame({ doc, expectedName: "expected-spacing-end.docx" });
 	});
 
 	it("should fail properly when having lexed + postparsed errors", function() {
@@ -497,13 +600,87 @@ describe("Templating", function() {
 		expectToThrow(create, Errors.XTTemplateError, expectedError);
 	});
 
-	it("should work with spacing at the end", function() {
-		const doc = createDoc("spacing-end.docx");
+	it("should work with pagebreak afterwards", function() {
+		const doc = createDoc("paragraph-loop-with-pagebreak.docx");
 		doc.setOptions({
 			paragraphLoop: true,
+			parser: angularParser,
 		});
-		doc.setData({ name: "John" }).render();
-		shouldBeSame({ doc, expectedName: "expected-spacing-end.docx" });
+		doc
+			.setData({
+				users: [{ name: "Bar" }, { name: "John" }, { name: "Baz" }],
+			})
+			.render();
+		shouldBeSame({
+			doc,
+			expectedName: "expected-paragraph-loop-with-pagebreak.docx",
+		});
+	});
+
+	it("should work with pagebreak afterwards with falsy value", function() {
+		const doc = createDoc("paragraph-loop-with-pagebreak.docx");
+		doc.setOptions({
+			paragraphLoop: true,
+			parser: angularParser,
+		});
+		doc
+			.setData({
+				users: false,
+			})
+			.render();
+		shouldBeSame({
+			doc,
+			expectedName: "expected-paragraph-loop-empty-with-pagebreak.docx",
+		});
+	});
+});
+
+describe("Prefixes", function() {
+	it("should be possible to change the prefix of the loop module", function() {
+		const content = "<w:t>{##tables}{user}{/tables}</w:t>";
+		const scope = {
+			tables: [{ user: "John" }, { user: "Jane" }],
+		};
+		const doc = createXmlTemplaterDocxNoRender(content, { tags: scope });
+		doc.modules.forEach(function(module) {
+			if (module.name === "LoopModule") {
+				module.prefix.start = "##";
+			}
+		});
+		doc.render();
+		expect(doc.getFullText()).to.be.equal("JohnJane");
+	});
+
+	it("should be possible to change the prefix of the loop module to a regexp", function() {
+		const content =
+			"<w:t>{##tables}{user}{/tables}{#tables}{user}{/tables}</w:t>";
+		const scope = {
+			tables: [{ user: "A" }, { user: "B" }],
+		};
+		const doc = createXmlTemplaterDocxNoRender(content, { tags: scope });
+		doc.modules.forEach(function(module) {
+			if (module.name === "LoopModule") {
+				module.prefix.start = /^##?(.*)$/;
+			}
+		});
+		doc.render();
+		expect(doc.getFullText()).to.be.equal("ABAB");
+	});
+
+	it("should be possible to change the prefix of the raw xml module to a regexp", function() {
+		const content = "<w:p><w:t>{!!raw}</w:t></w:p>";
+		const scope = {
+			raw: "<w:p><w:t>HoHo</w:t></w:p>",
+		};
+		const doc = createXmlTemplaterDocxNoRender(content, { tags: scope });
+		doc.modules.forEach(function(module) {
+			if (module.name === "RawXmlModule") {
+				module.prefix = /^!!?(.*)$/;
+			}
+		});
+		doc.render();
+
+		expect(doc.getFullText()).to.be.equal("HoHo");
 	});
 });
 
@@ -579,7 +756,7 @@ describe("Resolver", function() {
 			})
 			.then(function() {
 				doc.render();
-				shouldBeSame({ doc, expectedName: "multi-loop-expected.docx" });
+				shouldBeSame({ doc, expectedName: "expected-multi-loop.docx" });
 			});
 	});
 
@@ -613,7 +790,9 @@ describe("Resolver", function() {
 				t1total3: "t1total3-data",
 			})
 			.then(function(resolved) {
-				expect(resolved).to.be.deep.equal([
+				const myresolved = cloneDeep(resolved);
+				cleanRecursive(myresolved);
+				expect(myresolved).to.be.deep.equal([
 					{
 						tag: "t1total1",
 						value: "t1total1-data",
@@ -692,5 +871,65 @@ describe("Resolver", function() {
 					"TABLE1COLUMN1COLUMN2COLUMN3COLUMN4t1-1row-data1t1-1row-data2t1-1row-data3t1-1row-data4t1-2row-data1t1-2row-data2t1-2row-data3t1-2row-data4t1-3row-data1t1-3row-data2t1-3row-data3t1-3row-data4TOTALt1total1-datat1total2-datat1total3-data"
 				);
 			});
+	});
+
+	it("should not regress 1 sync", function() {
+		const doc = createDoc("regression-1.docx");
+		doc.compile();
+		doc.setData({ a: [{ d: "Hello world" }] });
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-regression-1.docx" });
+	});
+
+	it("should not regress when having [Content_Types.xml] contain Default instead of Override", function() {
+		const doc = createDoc("with-default-contenttype.docx");
+		doc.compile();
+		doc.setData({});
+		doc.render();
+		shouldBeSame({
+			doc,
+			expectedName: "expected-with-default-contenttype.docx",
+		});
+	});
+
+	it("should not regress 1 async", function() {
+		const doc = createDoc("regression-1.docx");
+		doc.compile();
+		return doc.resolveData({ a: [{ d: "Hello world" }] }).then(function() {
+			doc.render();
+			shouldBeSame({ doc, expectedName: "expected-regression-1.docx" });
+		});
+	});
+
+	const regress2Data = {
+		amount_wheels_car_1: "4",
+		amount_wheels_motorcycle_1: "2",
+
+		amount_wheels_car_2: "6",
+		amount_wheels_motorcycle_2: "3",
+
+		id: [
+			{
+				car: "1",
+				motorcycle: "",
+			},
+		],
+	};
+
+	it("should not regress 2 sync", function() {
+		const doc = createDoc("regression-2.docx");
+		doc.compile();
+		doc.setData(regress2Data);
+		doc.render();
+		shouldBeSame({ doc, expectedName: "expected-regression-2.docx" });
+	});
+
+	it("should not regress 2 async", function() {
+		const doc = createDoc("regression-2.docx");
+		doc.compile();
+		return doc.resolveData(regress2Data).then(function() {
+			doc.render();
+			shouldBeSame({ doc, expectedName: "expected-regression-2.docx" });
+		});
 	});
 });

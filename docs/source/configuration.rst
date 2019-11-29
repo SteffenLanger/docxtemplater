@@ -24,17 +24,38 @@ like '+', '-', or even create a Domain Specific Language to specify your tag val
 
 To enable this, you need to specify a custom parser.
 
-docxtemplater comes shipped with this parser:
+To understand this option better, it is good to understand how docxtemplater manages the scope.
 
-If the template is : 
+Whenever docxtemplater needs to render any tag, for example `{name}`, docxtemplater will delegate the retrieval of the value to the scopemanager.
+
+The scopemanager does the following : 
+
+ * it compiles the tag, by calling `parser('name')`  where 'name' is the string representing what is inside the docxtemplater tag. For loop tags, if the tag is `{#condition}`,  the passed string is only `condition` (it does not contain the #).
+
+   The compilation of that tag should return an object containing a function at the `get` property.
+
+ * whenever the tag needs to be rendered, docxtemplater calls `parser('name').get({name: 'John'})`, if `{name: 'John'}` is the current scope.
+
+When inside a loop, for example : `{#users}{name}{/users}`, they are several "scopes" in which it is possible to evaluate the `{name}` property. The "deepest" scope is always evaluated first, so if the data is : `{users: [{name: "John"}], name: "Mary"}`, the parser calls the function `parser('name').get({name:"John"})`. Now if the returned value from the `.get` method is `null` or `undefined`, docxtemplater will call the same parser one level up, until it reaches the end of the scope.
+
+If the root scope also returns `null` or `undefined` for the `.get` call, then the value from the nullGetter is used.
+
+As a second argument to the `parser()` call, you receive more meta data about the tag of the document (and you could check if it is a loop tag for example).
+
+As a second argument to the `get()` call, you receive more meta data about the scope, including the full scopeList.
+
+Lets take an example, If your template is : 
 
 .. code-block:: text
 
     Hello {user}
 
+And we call `doc.setData({user: "John"})`
+
+docxtemplater uses by default the following parser :
+
 .. code-block:: javascript
 
-    doc.setData({user: "John"})
     doc.setOptions({
         parser: function(tag) {
           // tag is "user"
@@ -52,7 +73,6 @@ If the template is :
           };
         },
     });
-
 
 A very useful parser is the angular-expressions parser, which has implemented useful features.
 
@@ -113,7 +133,48 @@ For the tag `.` in the first iteration, the arguments will be :
       // Together, scopePath and scopePathItem describe where we are in the data, in this case, we are in the tag users[0] (the first user)
     }
 
-For example, it is possible to use the `{$index}` tag inside a loop by using following parser : 
+Here is an example parser that allows you to lowercase or uppercase the data if writing your tag as : `{user[lower]}` or `{user[upper]}` :
+
+.. code-block:: javascript
+
+    doc.setOptions({
+        parser: function(tag) {
+          // tag is "foo[lower]"
+          let changeCase = false;
+          if(tag.endsWith("[lower]") {
+            changeCase = "lower";
+          }
+          if(tag.endsWith("[upper]") {
+            changeCase = "upper";
+          }
+          return {
+            'get': function(scope) {
+              let result = null;
+              // scope will be {user: "John"}
+              if (tag === '.') {
+                result = scope;
+              }
+              else {
+                // Here we use the property "user" of the object {user: "John"}
+                result = scope[tag];
+              }
+
+              if (typeof result === "string") {
+                if(changeCase === "upper") {
+                  return result.toUpperCase();
+                }
+                else if(changeCase === "lower") {
+                  return result.toLowerCase();
+                }
+              }
+              return result;
+            }
+          };
+        },
+    });
+
+
+As an other example, it is possible to use the `{$index}` tag inside a loop by using following parser : 
 
 .. code-block:: javascript
 
@@ -128,6 +189,7 @@ For example, it is possible to use the `{$index}` tag inside a loop by using fol
             },
         };
     }
+
 
 Custom delimiters
 -----------------

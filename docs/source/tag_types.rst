@@ -130,13 +130,13 @@ The section behaves in the following way:
 +----------------------+---------------------------+------------------+ 
 | Type of the value    | the section is shown      | scope            | 
 +======================+===========================+==================+ 
-| boolean              | once if true              | unchanged        | 
-+----------------------+---------------------------+------------------+ 
 | falsy or empty array | never                     |                  | 
 +----------------------+---------------------------+------------------+ 
 | non empty array      | for each element of array | element of array | 
 +----------------------+---------------------------+------------------+ 
 | object               | once                      | the object       | 
++----------------------+---------------------------+------------------+ 
+| other truthy value   | once                      | unchanged        | 
 +----------------------+---------------------------+------------------+ 
 
 This table shows for each type of value, what is the condition for the section to be changed and what is the scope of that section.
@@ -278,7 +278,7 @@ Consider the following contrived example:
     * {default_tags}
     {=<% %>=}
     * <% erb_style_tags %>
-    <%={ }%=>
+    <%={ }=%>
     * { default_tags_again }
 
 Here we have a list with three items. The first item uses the default tag style, the second uses erb style as defined by the Set Delimiter tag, and the third returns to the default style after yet another Set Delimiter declaration.

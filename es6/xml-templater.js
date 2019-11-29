@@ -7,6 +7,7 @@ const Parser = require("./parser.js");
 const render = require("./render.js");
 const postrender = require("./postrender.js");
 const resolve = require("./resolve.js");
+const joinUncorrupt = require("./join-uncorrupt");
 
 function getFullText(content, tagsXmlArray) {
 	const matcher = xmlMatcher(content, tagsXmlArray);
@@ -50,6 +51,7 @@ module.exports = class XmlTemplater {
 					return Promise.resolve(r);
 				})
 			).then(resolved => {
+				this.setModules({ inspect: { resolved } });
 				return (this.resolved = resolved);
 			});
 		});
@@ -62,8 +64,8 @@ module.exports = class XmlTemplater {
 			module.set(obj);
 		});
 	}
-	parse() {
-		let allErrors = [];
+	preparse() {
+		this.allErrors = [];
 		this.xmllexed = Lexer.xmlparse(this.content, {
 			text: this.fileTypeConfig.tagsXmlTextArray,
 			other: this.fileTypeConfig.tagsXmlLexedArray,
@@ -73,19 +75,26 @@ module.exports = class XmlTemplater {
 			this.xmllexed,
 			this.delimiters
 		);
-		allErrors = allErrors.concat(lexerErrors);
+		this.allErrors = this.allErrors.concat(lexerErrors);
 		this.lexed = lexed;
 		this.setModules({ inspect: { lexed: this.lexed } });
-		this.parsed = Parser.parse(this.lexed, this.modules);
+		const options = this.getOptions();
+		Parser.preparse(this.lexed, this.modules, options);
+	}
+	parse() {
+		this.setModules({ inspect: { filePath: this.filePath } });
+		const options = this.getOptions();
+		this.parsed = Parser.parse(this.lexed, this.modules, options);
 		this.setModules({ inspect: { parsed: this.parsed } });
 		const { postparsed, errors: postparsedErrors } = Parser.postparse(
 			this.parsed,
-			this.modules
+			this.modules,
+			options
 		);
 		this.postparsed = postparsed;
 		this.setModules({ inspect: { postparsed: this.postparsed } });
-		allErrors = allErrors.concat(postparsedErrors);
-		this.errorChecker(allErrors);
+		this.allErrors = this.allErrors.concat(postparsedErrors);
+		this.errorChecker(this.allErrors);
 		return this;
 	}
 	errorChecker(errors) {
@@ -119,6 +128,7 @@ module.exports = class XmlTemplater {
 			parser: this.parser,
 			baseNullGetter: this.baseNullGetter.bind(this),
 			filePath: this.filePath,
+			fileTypeConfig: this.fileTypeConfig,
 			linebreaks: this.linebreaks,
 		};
 	}
@@ -128,6 +138,7 @@ module.exports = class XmlTemplater {
 		options.resolved = this.resolved;
 		options.scopeManager = createScope(options);
 		options.render = render;
+		options.joinUncorrupt = joinUncorrupt;
 		const { errors, parts } = render(options);
 		this.errorChecker(errors);
 

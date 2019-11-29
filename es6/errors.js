@@ -1,11 +1,6 @@
 "use strict";
+const { last, first } = require("./utils");
 
-function first(a) {
-	return a[0];
-}
-function last(a) {
-	return a[a.length - 1];
-}
 function XTError(message) {
 	this.name = "GenericError";
 	this.message = message;
@@ -20,12 +15,12 @@ function XTTemplateError(message) {
 }
 XTTemplateError.prototype = new XTError();
 
-function RenderingError(message) {
+function XTRenderingError(message) {
 	this.name = "RenderingError";
 	this.message = message;
 	this.stack = new Error(message).stack;
 }
-RenderingError.prototype = new XTError();
+XTRenderingError.prototype = new XTError();
 
 function XTScopeParserError(message) {
 	this.name = "ScopeParserError";
@@ -107,9 +102,7 @@ function throwXmlTagNotFound(options) {
 	);
 	err.properties = {
 		id: `no_xml_tag_found_at_${options.position}`,
-		explanation: `No tag "${options.element}" was found at the ${
-			options.position
-		}`,
+		explanation: `No tag "${options.element}" was found at the ${options.position}`,
 		part: options.parsed[options.index],
 		parsed: options.parsed,
 		index: options.index,
@@ -118,15 +111,16 @@ function throwXmlTagNotFound(options) {
 	throw err;
 }
 
-function throwCorruptCharacters({ tag, value }) {
-	const err = new RenderingError("There are some XML corrupt characters");
+function getCorruptCharactersException({ tag, value, offset }) {
+	const err = new XTRenderingError("There are some XML corrupt characters");
 	err.properties = {
 		id: "invalid_xml_characters",
 		xtag: tag,
 		value,
+		offset,
 		explanation: "There are some corrupt characters for the field ${tag}",
 	};
-	throw err;
+	return err;
 }
 
 function throwContentMustBeString(type) {
@@ -180,30 +174,28 @@ function getUnmatchedLoopException(options) {
 		id: `${t}_loop`,
 		explanation: `The loop with tag "${tag}" is ${t}`,
 		xtag: tag,
+		offset: options.part.offset,
 	};
 	return err;
 }
 
-function getClosingTagNotMatchOpeningTag(options) {
-	const { tags } = options;
-
+function getClosingTagNotMatchOpeningTag({ tags }) {
 	const err = new XTTemplateError("Closing tag does not match opening tag");
 	err.properties = {
 		id: "closing_tag_does_not_match_opening_tag",
-		explanation: `The tag "${tags[0].value}" is closed by the tag "${
-			tags[1].value
-		}"`,
-		openingtag: tags[0].value,
-		offset: [tags[0].offset, tags[1].offset],
-		closingtag: tags[1].value,
+		explanation: `The tag "${tags[0].value}" is closed by the tag "${tags[1].value}"`,
+		openingtag: first(tags).value,
+		offset: [first(tags).offset, last(tags).offset],
+		closingtag: last(tags).value,
 	};
 	return err;
 }
 
-function getScopeCompilationError({ tag, rootError }) {
+function getScopeCompilationError({ tag, rootError, offset }) {
 	const err = new XTScopeParserError("Scope parser compilation failed");
 	err.properties = {
 		id: "scopeparser_compilation_failed",
+		offset,
 		tag,
 		explanation: `The scope parser for the tag "${tag}" failed to compile`,
 		rootError,
@@ -211,19 +203,20 @@ function getScopeCompilationError({ tag, rootError }) {
 	return err;
 }
 
-function getScopeParserExecutionError({ tag, scope, error }) {
+function getScopeParserExecutionError({ tag, scope, error, offset }) {
 	const err = new XTScopeParserError("Scope parser execution failed");
 	err.properties = {
 		id: "scopeparser_execution_failed",
 		explanation: `The scope parser for the tag ${tag} failed to execute`,
 		scope,
+		offset,
 		tag,
 		rootError: error,
 	};
 	return err;
 }
 
-function getLoopPositionProducesInvalidXMLError({ tag }) {
+function getLoopPositionProducesInvalidXMLError({ tag, offset }) {
 	const err = new XTTemplateError(
 		`The position of the loop tags "${tag}" would produce invalid XML`
 	);
@@ -231,14 +224,16 @@ function getLoopPositionProducesInvalidXMLError({ tag }) {
 		tag,
 		id: "loop_position_invalid",
 		explanation: `The tags "${tag}" are misplaced in the document, for example one of them is in a table and the other one outside the table`,
+		offset,
 	};
 	return err;
 }
 
-function throwUnimplementedTagType(part) {
+function throwUnimplementedTagType(part, index) {
 	const err = new XTTemplateError(`Unimplemented tag type "${part.type}"`);
 	err.properties = {
 		part,
+		index,
 		id: "unimplemented_tag_type",
 	};
 	throw err;
@@ -298,7 +293,9 @@ module.exports = {
 	XTInternalError,
 	XTScopeParserError,
 	XTAPIVersionError,
-	RenderingError,
+	// Remove this alias in v4
+	RenderingError: XTRenderingError,
+	XTRenderingError,
 
 	getClosingTagNotMatchOpeningTag,
 	getLoopPositionProducesInvalidXMLError,
@@ -307,10 +304,10 @@ module.exports = {
 	getUnclosedTagException,
 	getUnmatchedLoopException,
 	getUnopenedTagException,
+	getCorruptCharactersException,
 
 	throwApiVersionError,
 	throwContentMustBeString,
-	throwCorruptCharacters,
 	throwFileTypeNotHandled,
 	throwFileTypeNotIdentified,
 	throwLocationInvalid,

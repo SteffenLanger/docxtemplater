@@ -1,6 +1,7 @@
 const traitName = "expandPair";
 const mergeSort = require("../mergesort");
 const { getLeft, getRight } = require("../doc-utils");
+
 const wrapper = require("../module-wrapper");
 const { getExpandToDefault } = require("../traits");
 const {
@@ -61,6 +62,11 @@ function getPairs(traits) {
 
 const expandPairTrait = {
 	name: "ExpandPairTrait",
+	on(eventName) {
+		if (eventName === "attached") {
+			this.attached = false;
+		}
+	},
 	optionsTransformer(options, docxtemplater) {
 		this.expandTags = docxtemplater.fileTypeConfig.expandTags.concat(
 			docxtemplater.options.paragraphLoop
@@ -95,6 +101,7 @@ const expandPairTrait = {
 
 		let currentPairIndex = 0;
 		let innerParts;
+
 		const newParsed = postparsed.reduce(function(newParsed, part, i) {
 			const inPair =
 				currentPairIndex < pairs.length &&

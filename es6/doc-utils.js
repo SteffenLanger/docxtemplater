@@ -2,6 +2,7 @@
 
 const { DOMParser, XMLSerializer } = require("xmldom");
 const { throwXmlTagNotFound } = require("./errors");
+const { last, first } = require("./utils");
 
 function parser(tag) {
 	return {
@@ -12,6 +13,109 @@ function parser(tag) {
 			return scope[tag];
 		},
 	};
+}
+
+function getNearestLeftIndex(parsed, elements, index) {
+	for (let i = index; i >= 0; i--) {
+		const part = parsed[i];
+		for (let j = 0, len = elements.length; j < len; j++) {
+			const element = elements[j];
+			if (isStarting(part.value, element)) {
+				return j;
+			}
+		}
+	}
+	return null;
+}
+
+function getNearestRightIndex(parsed, elements, index) {
+	for (let i = index, l = parsed.length; i < l; i++) {
+		const part = parsed[i];
+		for (let j = 0, len = elements.length; j < len; j++) {
+			const element = elements[j];
+			if (isEnding(part.value, element)) {
+				return j;
+			}
+		}
+	}
+	return -1;
+}
+
+function getNearestLeft(parsed, elements, index) {
+	const found = getNearestLeftIndex(parsed, elements, index);
+	if (found !== -1) {
+		return elements[found];
+	}
+	return null;
+}
+
+function getNearestRight(parsed, elements, index) {
+	const found = getNearestRightIndex(parsed, elements, index);
+	if (found !== -1) {
+		return elements[found];
+	}
+	return null;
+}
+
+function buildNearestCache(postparsed, tags) {
+	return postparsed.reduce(function(cached, part, i) {
+		if (part.type === "tag" && tags.indexOf(part.tag) !== -1) {
+			cached.push({ i, part });
+		}
+		return cached;
+	}, []);
+}
+
+function getNearestLeftIndexWithCache(index, cache) {
+	if (cache.length === 0) {
+		return -1;
+	}
+	for (let i = 0, len = cache.length; i < len; i++) {
+		const current = cache[i];
+		const next = cache[i + 1];
+		if (
+			current.i < index &&
+			(!next || index < next.i) &&
+			current.part.position === "start"
+		) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+function getNearestLeftWithCache(index, cache) {
+	const found = getNearestLeftIndexWithCache(index, cache);
+	if (found !== -1) {
+		return cache[found].part.tag;
+	}
+	return null;
+}
+
+function getNearestRightIndexWithCache(index, cache) {
+	if (cache.length === 0) {
+		return -1;
+	}
+	for (let i = 0, len = cache.length; i < len; i++) {
+		const current = cache[i];
+		const last = cache[i - 1];
+		if (
+			index < current.i &&
+			(!last || last.i < index) &&
+			current.part.position === "end"
+		) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+function getNearestRightWithCache(index, cache) {
+	const found = getNearestRightIndexWithCache(index, cache);
+	if (found !== -1) {
+		return cache[found].part.tag;
+	}
+	return null;
 }
 
 function endsWith(str, suffix) {
@@ -38,11 +142,11 @@ function chunkBy(parsed, f) {
 		.reduce(
 			function(chunks, p) {
 				const currentChunk = last(chunks);
+				const res = f(p);
 				if (currentChunk.length === 0) {
 					currentChunk.push(p);
 					return chunks;
 				}
-				const res = f(p);
 				if (res === "start") {
 					chunks.push([p]);
 				} else if (res === "end") {
@@ -58,10 +162,6 @@ function chunkBy(parsed, f) {
 		.filter(function(p) {
 			return p.length > 0;
 		});
-}
-
-function last(a) {
-	return a[a.length - 1];
 }
 
 const defaults = {
@@ -102,6 +202,10 @@ function xml2str(xmlNode) {
 }
 
 function str2xml(str) {
+	if (str.charCodeAt(0) === 65279) {
+		// BOM sequence
+		str = str.substr(1);
+	}
 	const parser = new DOMParser();
 	return parser.parseFromString(str, "text/xml");
 }
@@ -114,9 +218,9 @@ const charMap = {
 	'"': "&quot;",
 };
 
-const regexStripRegexp = /[\-\[\]\/\{\}\(\)\*\+\?\.\\\^\$\|]/g;
 function escapeRegExp(str) {
-	return str.replace(regexStripRegexp, "\\$&");
+	// to be able to use a string as a regex
+	return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 const charMapRegexes = Object.keys(charMap).map(function(endChar) {
@@ -180,27 +284,77 @@ returns: [{array: {0: 'la'},offset: 2},{array: {0: 'la'},offset: 8},{array: {0: 
 	return matchArray;
 }
 
+function isEnding(value, element) {
+	return value === "</" + element + ">";
+}
+
+function isStarting(value, element) {
+	return (
+		value.indexOf("<" + element) === 0 &&
+		[">", " "].indexOf(value[element.length + 1]) !== -1
+	);
+}
+
 function getRight(parsed, element, index) {
-	for (let i = index, l = parsed.length; i < l; i++) {
-		const part = parsed[i];
-		if (part.value === "</" + element + ">") {
-			return i;
-		}
+	const val = getRightOrNull(parsed, element, index);
+	if (val !== null) {
+		return val;
 	}
 	throwXmlTagNotFound({ position: "right", element, parsed, index });
 }
 
-function getLeft(parsed, element, index) {
-	for (let i = index; i >= 0; i--) {
+function getRightOrNull(parsed, elements, index) {
+	if (typeof elements === "string") {
+		elements = [elements];
+	}
+	let level = 1;
+	for (let i = index, l = parsed.length; i < l; i++) {
 		const part = parsed[i];
-		if (
-			part.value.indexOf("<" + element) === 0 &&
-			[">", " "].indexOf(part.value[element.length + 1]) !== -1
-		) {
-			return i;
+		for (let j = 0, len = elements.length; j < len; j++) {
+			const element = elements[j];
+			if (isEnding(part.value, element)) {
+				level--;
+			}
+			if (isStarting(part.value, element)) {
+				level++;
+			}
+			if (level === 0) {
+				return i;
+			}
 		}
 	}
+	return null;
+}
+
+function getLeft(parsed, element, index) {
+	const val = getLeftOrNull(parsed, element, index);
+	if (val !== null) {
+		return val;
+	}
 	throwXmlTagNotFound({ position: "left", element, parsed, index });
+}
+
+function getLeftOrNull(parsed, elements, index) {
+	if (typeof elements === "string") {
+		elements = [elements];
+	}
+	let level = 1;
+	for (let i = index; i >= 0; i--) {
+		const part = parsed[i];
+		for (let j = 0, len = elements.length; j < len; j++) {
+			const element = elements[j];
+			if (isStarting(part.value, element)) {
+				level--;
+			}
+			if (isEnding(part.value, element)) {
+				level++;
+			}
+			if (level === 0) {
+				return i;
+			}
+		}
+	}
+	return null;
 }
 
 function isTagStart(tagType, { type, tag, position }) {
@@ -266,6 +420,15 @@ function hasCorruptCharacters(string) {
 module.exports = {
 	endsWith,
 	startsWith,
+	getNearestLeft,
+	getNearestRight,
+	getNearestLeftWithCache,
+	getNearestRightWithCache,
+	getNearestLeftIndex,
+	getNearestRightIndex,
+	getNearestLeftIndexWithCache,
+	getNearestRightIndexWithCache,
+	buildNearestCache,
 	isContent,
 	isParagraphStart,
 	isParagraphEnd,
@@ -276,10 +439,13 @@ module.exports = {
 	unique,
 	chunkBy,
 	last,
+	first,
 	mergeObjects,
 	xml2str,
 	str2xml,
+	getRightOrNull,
 	getRight,
+	getLeftOrNull,
 	getLeft,
 	pregMatchAll,
 	convertSpaces,

@@ -6,6 +6,7 @@
 *.png
 *.sublime-project
 *.sublime-workspace
+.babelrc
 .~lock*
 .env
 .nyc_output
@@ -33,3 +34,4 @@ prof
 profile_output_total.json
 tags
 browser-demo
+/js/tests/*.xml

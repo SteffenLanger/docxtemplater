@@ -6,8 +6,8 @@ const {
 	isParagraphEnd,
 	isContent,
 } = require("../doc-utils");
-const dashInnerRegex = /^-([^\s]+)\s(.+)$/;
 const wrapper = require("../module-wrapper");
+const { match, getValue, getValues } = require("../prefix-matcher");
 
 const moduleName = "loop";
 
@@ -28,49 +28,50 @@ function getOffset(chunk) {
 	return hasContent(chunk) ? 0 : chunk.length;
 }
 
-const loopModule = {
-	name: "LoopModule",
-	prefix: {
-		start: "#",
-		end: "/",
-		dash: "-",
-		inverted: "^",
-	},
+class LoopModule {
+	constructor() {
+		this.name = "LoopModule";
+		this.prefix = {
+			start: "#",
+			end: "/",
+			dash: /^-([^\s]+)\s(.+)$/,
+			inverted: "^",
+		};
+	}
 	parse(placeHolderContent) {
 		const module = moduleName;
 		const type = "placeholder";
 		const { start, inverted, dash, end } = this.prefix;
-		if (placeHolderContent[0] === start) {
+		if (match(start, placeHolderContent)) {
 			return {
 				type,
-				value: placeHolderContent.substr(1),
+				value: getValue(start, placeHolderContent),
 				expandTo: "auto",
 				module,
 				location: "start",
 				inverted: false,
 			};
 		}
-		if (placeHolderContent[0] === inverted) {
+		if (match(inverted, placeHolderContent)) {
 			return {
 				type,
-				value: placeHolderContent.substr(1),
+				value: getValue(inverted, placeHolderContent),
 				expandTo: "auto",
 				module,
 				location: "start",
 				inverted: true,
 			};
 		}
-		if (placeHolderContent[0] === end) {
+		if (match(end, placeHolderContent)) {
 			return {
 				type,
-				value: placeHolderContent.substr(1),
+				value: getValue(end, placeHolderContent),
 				module,
 				location: "end",
 			};
 		}
-		if (placeHolderContent[0] === dash) {
-			const value = placeHolderContent.replace(dashInnerRegex, "$2");
-			const expandTo = placeHolderContent.replace(dashInnerRegex, "$1");
+		if (match(dash, placeHolderContent)) {
+			const [, expandTo, value] = getValues(dash, placeHolderContent);
 			return {
 				type,
 				value,
@@ -81,7 +82,7 @@ const loopModule = {
 			};
 		}
 		return null;
-	},
+	}
 	getTraits(traitName, parsed) {
 		if (traitName !== "expandPair") {
 			return;
@@ -93,7 +94,7 @@ const loopModule = {
 			}
 			return tags;
 		}, []);
-	},
+	}
 	postparse(parsed, { basePart }) {
 		if (!isEnclosedByParagraphs(parsed)) {
 			return parsed;
@@ -105,18 +106,26 @@ const loopModule = {
 		) {
 			return parsed;
 		}
+		let level = 0;
 		const chunks = chunkBy(parsed, function(p) {
 			if (isParagraphStart(p)) {
-				return "start";
+				level++;
+				if (level === 1) {
+					return "start";
+				}
 			}
 			if (isParagraphEnd(p)) {
-				return "end";
+				level--;
+				if (level === 0) {
+					return "end";
+				}
 			}
 			return null;
 		});
 		if (chunks.length <= 2) {
 			return parsed;
 		}
+
 		const firstChunk = chunks[0];
 		const lastChunk = last(chunks);
 		const firstOffset = getOffset(firstChunk);
@@ -124,19 +133,30 @@ const loopModule = {
 		if (firstOffset === 0 || lastOffset === 0) {
 			return parsed;
 		}
+		let hasPageBreak = false;
+		lastChunk.forEach(function(part) {
+			if (part.tag === "w:br" && part.value.indexOf('w:type="page"') !== -1) {
+				hasPageBreak = true;
+			}
+		});
+
+		if (hasPageBreak) {
+			basePart.hasPageBreak = true;
+		}
 		return parsed.slice(firstOffset, parsed.length - lastOffset);
-	},
+	}
 	render(part, options) {
-		if (!part.type === "placeholder" || part.module !== moduleName) {
+		if (part.type !== "placeholder" || part.module !== moduleName) {
 			return null;
 		}
 		let totalValue = [];
 		let errors = [];
-		function loopOver(scope, i) {
+		function loopOver(scope, i, length) {
 			const scopeManager = options.scopeManager.createSubScopeManager(
 				scope,
 				part.value,
-				i
+				i,
+				part
 			);
 			const subRendered = options.render(
 				mergeObjects({}, options, {
@@ -145,45 +165,78 @@ const loopModule = {
 					scopeManager,
 				})
 			);
+			if (part.hasPageBreak && i === length - 1) {
+				let found = false;
+				for (let j = subRendered.parts.length - 1; i >= 0; i--) {
+					const p = subRendered.parts[j];
+					if (p === "</w:p>" && !found) {
+						found = true;
+						subRendered.parts.splice(j, 0, '<w:r><w:br w:type="page"/></w:r>');
+						break;
+					}
+				}
+
+				if (!found) {
+					subRendered.parts.push('<w:p><w:r><w:br w:type="page"/></w:r></w:p>');
+				}
+			}
 			totalValue = totalValue.concat(subRendered.parts);
 			errors = errors.concat(subRendered.errors || []);
 		}
-		options.scopeManager.loopOver(part.value, loopOver, part.inverted, {
-			part,
-		});
-		return { value: totalValue.join(""), errors };
-	},
+		const result = options.scopeManager.loopOver(
+			part.value,
+			loopOver,
+			part.inverted,
+			{
+				part,
+			}
+		);
+		if (result === false) {
+			if (part.hasPageBreak) {
+				return {
+					value: '<w:p><w:r><w:br w:type="page"/></w:r></w:p>',
+				};
+			}
+			return {
+				value: part.emptyValue || "",
+				errors,
+			};
+		}
+		const contains = options.fileTypeConfig.tagShouldContain || [];
+
+		return { value: options.joinUncorrupt(totalValue, contains), errors };
+	}
 	resolve(part, options) {
-		if (!part.type === "placeholder" || part.module !== moduleName) {
+		if (part.type !== "placeholder" || part.module !== moduleName) {
 			return null;
 		}
-		const value = options.scopeManager.getValue(part.value, { part });
+
+		const sm = options.scopeManager;
+		const promisedValue = sm.getValue(part.value, { part });
 		const promises = [];
 		function loopOver(scope, i) {
-			const scopeManager = options.scopeManager.createSubScopeManager(
-				scope,
-				part.value,
-				i
-			);
+			const scopeManager = sm.createSubScopeManager(scope, part.value, i, part);
 			promises.push(
-				options.resolve(
-					mergeObjects(options, {
-						compiled: part.subparsed,
-						tags: {},
-						scopeManager,
-					})
-				)
+				options.resolve({
+					filePath: options.filePath,
+					modules: options.modules,
+					baseNullGetter: options.baseNullGetter,
+					resolve: options.resolve,
+					compiled: part.subparsed,
+					tags: {},
+					scopeManager,
+				})
 			);
 		}
-		return Promise.resolve(value).then(function(value) {
-			options.scopeManager.loopOverValue(value, loopOver, part.inverted);
+		return Promise.resolve(promisedValue).then(function(value) {
+			sm.loopOverValue(value, loopOver, part.inverted);
 			return Promise.all(promises).then(function(r) {
 				return r.map(function({ resolved }) {
 					return resolved;
 				});
 			});
 		});
-	},
-};
+	}
+}
 
-module.exports = () => wrapper(loopModule);
+module.exports = () => wrapper(new LoopModule());

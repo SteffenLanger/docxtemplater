@@ -1,12 +1,15 @@
 const {
+	getRightOrNull,
 	getRight,
 	getLeft,
+	getLeftOrNull,
 	concatArrays,
 	chunkBy,
 	isTagStart,
 	isTagEnd,
 	isContent,
 	last,
+	first,
 } = require("./doc-utils");
 const {
 	XTTemplateError,
@@ -14,19 +17,18 @@ const {
 	getLoopPositionProducesInvalidXMLError,
 } = require("./errors");
 
-function lastTagIsOpenTag(array, tag) {
-	if (array.length === 0) {
+function lastTagIsOpenTag(tags, tag) {
+	if (tags.length === 0) {
 		return false;
 	}
-	const lastTag = array[array.length - 1];
-	const innerLastTag = lastTag.tag.substr(1);
+	const innerLastTag = last(tags).tag.substr(1);
 	const innerCurrentTag = tag.substr(2, tag.length - 3);
 	return innerLastTag.indexOf(innerCurrentTag) === 0;
 }
 
-function addTag(array, tag) {
-	array.push({ tag });
-	return array;
+function addTag(tags, tag) {
+	tags.push({ tag });
+	return tags;
 }
 
 function getListXmlElements(parts) {
@@ -79,7 +81,8 @@ function getExpandToDefault(postparsed, pair, expandTags) {
 	if (closingTagCount !== startingTagCount) {
 		return {
 			error: getLoopPositionProducesInvalidXMLError({
-				tag: pair[0].part.value,
+				tag: first(pair).part.value,
+				offset: [first(pair).part.offset, last(pair).part.offset],
 			}),
 		};
 	}
@@ -87,8 +90,11 @@ function getExpandToDefault(postparsed, pair, expandTags) {
 		const { contains, expand, onlyTextInTag } = expandTags[i];
 		if (has(contains, xmlElements)) {
 			if (onlyTextInTag) {
-				const left = getLeft(postparsed, contains, pair[0].offset);
-				const right = getRight(postparsed, contains, pair[1].offset);
+				const left = getLeftOrNull(postparsed, contains, pair[0].offset);
+				const right = getRightOrNull(postparsed, contains, pair[1].offset);
+				if (left === null || right === null) {
+					continue;
+				}
 
 				const chunks = chunkBy(postparsed.slice(left, right), function(p) {
 					if (isTagStart(contains, p)) {
@@ -104,7 +110,7 @@ function getExpandToDefault(postparsed, pair, expandTags) {
 					continue;
 				}
 
-				const firstChunk = chunks[0];
+				const firstChunk = first(chunks);
 				const lastChunk = last(chunks);
 
 				const firstContent = firstChunk.filter(isContent);
@@ -127,8 +133,8 @@ function expandOne(part, postparsed, options) {
 	}
 	let right, left;
 	try {
-		right = getRight(postparsed, expandTo, index);
 		left = getLeft(postparsed, expandTo, index);
+		right = getRight(postparsed, expandTo, index);
 	} catch (rootError) {
 		if (rootError instanceof XTTemplateError) {
 			throwRawTagNotInParagraph({
@@ -144,6 +150,7 @@ function expandOne(part, postparsed, options) {
 	const leftParts = postparsed.slice(left, index);
 	const rightParts = postparsed.slice(index + 1, right + 1);
 	let inner = options.getInner({
+		postparse: options.postparse,
 		index,
 		part,
 		leftParts,
