@@ -14,7 +14,7 @@
       "fs": "./js/browser-versions/fs.js"
     }
   },
-  "main": "js/docxtemplater.js",
+  "main": "es6/docxtemplater.js",
   "keywords": [
     "docx",
     "pptx",
